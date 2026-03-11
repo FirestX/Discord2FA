@@ -12,23 +12,24 @@ import org.bukkit.event.inventory.InventoryOpenEvent;
 import org.bukkit.event.player.*;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 public class VerifyManager implements Listener, BaseVerifyManager {
-    private final List<Player> verifyingPlayers = new ArrayList<>();
-    private final List<Player> forcedPlayers = new ArrayList<>();
+    private final List<Player> verifyingPlayers = new CopyOnWriteArrayList<>();
+    private final List<Player> forcedPlayers = new CopyOnWriteArrayList<>();
     private List<String> allowedCommands;
-    private final HashMap<Player, Integer> titleCooldown = new HashMap<>();
+    private final Map<Player, Integer> titleCooldown = new ConcurrentHashMap<>();
     private boolean forceLink;
 
     public VerifyManager(){
         Bukkit.getScheduler().scheduleSyncRepeatingTask(Discord2FA.getPlugin(), () -> {
-            for (Player p : titleCooldown.keySet()) {
-                if (titleCooldown.get(p) == 0) {
-                    titleCooldown.remove(p);
-                    continue;
-                }
-                titleCooldown.put(p, titleCooldown.get(p) - 1);
-            }
+            titleCooldown.entrySet().removeIf(entry -> {
+                int newValue = entry.getValue() - 1;
+                if (newValue <= 0) return true;
+                entry.setValue(newValue);
+                return false;
+            });
         }, 0, 20);
     }
 
@@ -43,20 +44,28 @@ public class VerifyManager implements Listener, BaseVerifyManager {
     }
 
     @EventHandler
-    public void onPlayerJoin(PlayerJoinEvent e){
-        if(Discord2FA.getStorageManager().isLinked(e.getPlayer().getUniqueId().toString())){
-            if (Discord2FA.getStorageManager().isRemembered(e.getPlayer().getUniqueId().toString(), Objects.requireNonNull(e.getPlayer().getAddress()).getAddress().toString())){
-                return;
-            }
-            verifyingPlayers.add(e.getPlayer());
-            sendTitle(e.getPlayer());
-            Account account = Discord2FA.getStorageManager().findAccountByUUID(e.getPlayer().getUniqueId().toString());
-            assert account != null;
-            Discord2FA.getDiscordUtils().sendVerify(account, Objects.requireNonNull(e.getPlayer().getAddress()).getAddress().getHostAddress());
-        } else if (forceLink) {
-            forcedPlayers.add(e.getPlayer());
-            e.getPlayer().sendMessage(Discord2FA.getMessages().get("forceLink"));
-        }
+    public void onPlayerJoin(PlayerJoinEvent e) {
+        Player player = e.getPlayer();
+        String uuid = player.getUniqueId().toString();
+        String ip = Objects.requireNonNull(player.getAddress()).getAddress().toString();
+        String hostAddress = Objects.requireNonNull(player.getAddress()).getAddress().getHostAddress();
+
+        Bukkit.getScheduler().runTaskAsynchronously(Discord2FA.getPlugin(), () -> {
+            Account account = Discord2FA.getStorageManager().findAccountByUUID(uuid);
+            boolean remembered = Discord2FA.getStorageManager().isRemembered(uuid, ip);
+
+            Bukkit.getScheduler().runTask(Discord2FA.getPlugin(), () -> {
+                if (account != null) {
+                    if (remembered) return;
+                    verifyingPlayers.add(player);
+                    sendTitle(player);
+                    Discord2FA.getDiscordUtils().sendVerify(account, hostAddress);
+                } else if (forceLink) {
+                    forcedPlayers.add(player);
+                    player.sendMessage(Discord2FA.getMessages().get("forceLink"));
+                }
+            });
+        });
     }
 
     @EventHandler

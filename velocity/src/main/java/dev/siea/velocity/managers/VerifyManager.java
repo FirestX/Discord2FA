@@ -15,13 +15,15 @@ import net.kyori.adventure.title.Title;
 
 import java.time.Duration;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 
 public class VerifyManager implements BaseVerifyManager {
-    private final List<Player> verifyingPlayers = new ArrayList<>();
-    private final List<Player> forcedPlayers = new ArrayList<>();
+    private final List<Player> verifyingPlayers = new CopyOnWriteArrayList<>();
+    private final List<Player> forcedPlayers = new CopyOnWriteArrayList<>();
     private List<String> allowedCommands;
-    private final HashMap<Player, Integer> titleCooldown = new HashMap<>();
+    private final Map<Player, Integer> titleCooldown = new ConcurrentHashMap<>();
     private boolean forceLink;
     private final ProxyServer server;
     private final Discord2FA plugin;
@@ -55,26 +57,26 @@ public class VerifyManager implements BaseVerifyManager {
     }
 
     @Subscribe
-    public void onServerConnected(ServerConnectedEvent event) {
-        server.getScheduler().buildTask(plugin, this::updateTitleCooldowns).repeat(1L, TimeUnit.SECONDS).schedule();
-    }
-
-    @Subscribe
     public void onPlayerJoin(ServerConnectedEvent event) {
         Player player = event.getPlayer();
-        if (Discord2FA.getStorageManager().isLinked(player.getUniqueId().toString())) {
-            if (Discord2FA.getStorageManager().isRemembered(player.getUniqueId().toString(), Objects.requireNonNull(player.getRemoteAddress()).getAddress().toString())) {
-                return;
+        String uuid = player.getUniqueId().toString();
+        String ip = Objects.requireNonNull(player.getRemoteAddress()).getAddress().toString();
+        String hostAddress = Objects.requireNonNull(player.getRemoteAddress()).getAddress().getHostAddress();
+
+        server.getScheduler().buildTask(plugin, () -> {
+            Account account = Discord2FA.getStorageManager().findAccountByUUID(uuid);
+            boolean remembered = Discord2FA.getStorageManager().isRemembered(uuid, ip);
+
+            if (account != null) {
+                if (remembered) return;
+                verifyingPlayers.add(player);
+                sendTitle(player);
+                Discord2FA.getDiscordUtils().sendVerify(account, hostAddress);
+            } else if (forceLink) {
+                forcedPlayers.add(player);
+                player.sendMessage(Component.text(Discord2FA.getMessages().get("forceLink")));
             }
-            verifyingPlayers.add(player);
-            sendTitle(player);
-            Account account = Discord2FA.getStorageManager().findAccountByUUID(player.getUniqueId().toString());
-            assert account != null;
-            Discord2FA.getDiscordUtils().sendVerify(account, Objects.requireNonNull(player.getRemoteAddress()).getAddress().getHostAddress());
-        } else if (forceLink) {
-            forcedPlayers.add(player);
-            player.sendMessage(Component.text(Discord2FA.getMessages().get("forceLink")));
-        }
+        }).schedule();
     }
 
     @Subscribe
